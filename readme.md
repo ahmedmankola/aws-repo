@@ -36,11 +36,8 @@ The file is stored in a centralized S3 bucket under the naming format:
 
 s3://<inventory-bucket>/<account-id>/aws_inventory_YYYYMMDDHHMMSS.csv
 
-Automatic Execution:
 
-Lambda runs daily at midnight (UTC) using an EventBridge Rule.
-
-You can manually trigger Lambda as well.
+Currently you can only run lambda through manual trigger .
 
 Deployment Instructions
 
@@ -81,13 +78,6 @@ Manual Execution (Run Lambda Function on Demand)
 
 aws lambda invoke --function-name AWSInventoryCollector output.json
 
-Scheduled Execution (Runs Automatically)
-
-The EventBridge Rule schedules Lambda to run every day at midnight (UTC).
-
-Modify the schedule using:
-
-aws events put-rule --name AWSInventorySchedule --schedule-expression "rate(12 hours)"
 
 Limitations
 
@@ -112,3 +102,7 @@ Solution: Use Step Functions or split execution per region.
 Some AWS services (IAM, S3, Route 53) are global and are only queried once.
 
 Other services (EC2, RDS, Lambda) are regional and queried per region.
+
+🔹 List of regions
+currently we set list of regions in the code , need to list of regions that need to work on it 
+
