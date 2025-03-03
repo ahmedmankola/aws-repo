@@ -2,97 +2,113 @@ AWS Inventory Collection Solution
 
 Overview
 
-This solution automates the collection of AWS inventory across multiple AWS accounts and regions. It retrieves information about various AWS resources, such as EC2 instances, Lambda functions, and RDS instances, and stores the data in an S3 bucket as a CSV file. The solution is implemented using AWS CloudFormation and utilizes AWS Lambda, EventBridge, and S3.
+This solution automates the collection of AWS resources across multiple AWS accounts and regions. It retrieves data from services such as EC2, EBS, RDS, Lambda, S3, IAM, VPC, Security Groups, Load Balancers, Route 53, DynamoDB, SNS, and SQS. The collected inventory is stored as a CSV file in an S3 bucket for further analysis.
 
-Components
+The solution is implemented using AWS CloudFormation, Lambda, IAM, S3, and EventBridge (CloudWatch Events) to automate execution.
 
-AWS Lambda Function: A Python-based function that collects inventory details from multiple AWS regions.
+Architecture & Components
 
-Amazon S3 Bucket: Stores the inventory data as CSV files.
+AWS Lambda: A Python-based function that collects inventory across all AWS regions.
 
-AWS EventBridge Rule: Triggers the Lambda function on a scheduled interval (e.g., daily).
+Amazon S3: Stores the collected inventory as a CSV file.
 
-IAM Role and Policies: Grants necessary permissions to the Lambda function to access AWS resources.
+AWS IAM Role: Grants Lambda permissions to access AWS services.
 
-CloudFormation Template: Automates the deployment of all components.
+EventBridge (CloudWatch Events): Triggers Lambda execution on a schedule (e.g., daily).
+
+CloudFormation Template: Automates the deployment of all resources across AWS accounts.
 
 How It Works
 
-The CloudFormation template provisions all required resources.
+Lambda Function Execution:
 
-The EventBridge rule triggers the Lambda function at the defined schedule (e.g., once per day).
+Automatically detects all available AWS regions.
 
-The Lambda function collects resource inventory from specified AWS regions.
+Collects inventory from EC2, RDS, Lambda, S3, IAM, VPC, Security Groups, Load Balancers, Route 53, DynamoDB, SNS, and SQS.
 
-The inventory data is formatted as a CSV file and uploaded to the designated S3 bucket.
+Saves the inventory to a CSV file in S3.
 
-The collected inventory data can be accessed from the S3 bucket.
+Storage in S3:
+
+The collected inventory is formatted as a CSV file.
+
+The file is stored in a centralized S3 bucket under the naming format:
+
+s3://<inventory-bucket>/<account-id>/aws_inventory_YYYYMMDDHHMMSS.csv
+
+Automatic Execution:
+
+Lambda runs daily at midnight (UTC) using an EventBridge Rule.
+
+You can manually trigger Lambda as well.
 
 Deployment Instructions
 
 Prerequisites
 
-An AWS account with appropriate permissions to create IAM roles, Lambda functions, S3 buckets, and EventBridge rules.
+AWS CLI installed and configured with admin credentials.
 
-AWS CLI installed and configured with the necessary credentials.
+AWS CloudFormation enabled.
 
-Steps to Deploy
+S3 bucket to store inventory.
 
-Create the CloudFormation stack:
+Deploy Using CloudFormation
+
+1️⃣ Create the Stack
+
+Save the CloudFormation YAML file as aws_inventory.yaml, then run:
 
 aws cloudformation create-stack --stack-name AWSInventoryStack \
-    --template-body file://aws_inventory.yml \
+    --template-body file://aws_inventory.yaml \
     --capabilities CAPABILITY_NAMED_IAM \
-    --parameters ParameterKey=S3BucketName,ParameterValue=my-aws-inventory-bucket
+    --parameters ParameterKey=S3BucketName,ParameterValue=my-inventory-bucket
 
-Wait for stack creation to complete:
+2️⃣ Wait for Stack Creation
 
 aws cloudformation wait stack-create-complete --stack-name AWSInventoryStack
 
-Verify the deployment:
+3️⃣ Verify Lambda Deployment
 
-Check the AWS Lambda function in the AWS console.
+aws lambda list-functions | grep AWSInventoryCollector
 
-Verify that an EventBridge rule exists.
+4️⃣ Check S3 for Inventory Data
 
-Ensure the S3 bucket is created.
+aws s3 ls s3://my-inventory-bucket/
 
-Executing the Solution Manually
+Execution Methods
 
-To manually trigger the Lambda function:
+Manual Execution (Run Lambda Function on Demand)
 
 aws lambda invoke --function-name AWSInventoryCollector output.json
 
-Retrieving the Inventory Data
+Scheduled Execution (Runs Automatically)
 
-After execution, the inventory data will be stored in the S3 bucket. You can download the CSV file using:
+The EventBridge Rule schedules Lambda to run every day at midnight (UTC).
 
-aws s3 cp s3://my-aws-inventory-bucket/aws_inventory_<timestamp>.csv ./
+Modify the schedule using:
 
-Replace <timestamp> with the appropriate timestamp of the file.
+aws events put-rule --name AWSInventorySchedule --schedule-expression "rate(12 hours)"
 
 Limitations
 
-Region Restriction: The script only collects data from specified AWS regions.
+🔹 Cross-Account Inventory Requires Setup
 
-Supported Resources: Currently supports EC2, Lambda, and RDS. Additional services may need custom modifications.
+If using multiple AWS accounts, IAM roles must be configured with cross-account access.
 
-IAM Permissions: Ensure IAM policies grant required permissions; otherwise, some resources may not be retrieved.
+🔹 Permissions Must Be Correct
 
-S3 Storage Costs: The collected inventory files are stored in S3, which may incur costs based on storage size and access frequency.
+Lambda requires and permissions.
 
-Future Enhancements
+Ensure IAM permissions allow Lambda to access AWS services.
 
-Expand support for more AWS services (e.g., S3, IAM, DynamoDB, etc.).
+🔹 Large AWS Environments May Exceed Limits
 
-Add error handling and logging to CloudWatch for debugging.
+If AWS has thousands of resources, Lambda may hit execution time limits.
 
-Implement AWS Organizations integration for multi-account inventory collection.
+Solution: Use Step Functions or split execution per region.
 
-Cleanup
+🔹 Global vs. Regional Services
 
-To remove all deployed resources, delete the CloudFormation stack:
+Some AWS services (IAM, S3, Route 53) are global and are only queried once.
 
-aws cloudformation delete-stack --stack-name AWSInventoryStack
-
-Author
+Other services (EC2, RDS, Lambda) are regional and queried per region.
