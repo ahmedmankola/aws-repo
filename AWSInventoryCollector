@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AWS Inventory Collection using Lambda and S3"
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: "Name of the S3 bucket where inventory will be stored"
+
+Resources:
+  InventoryS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Ref S3BucketName
+    DeletionPolicy: Retain
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "LambdaInventoryRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "LambdaInventoryPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:PutObject"
+                Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+              - Effect: "Allow"
+                Action:
+                  - "ec2:DescribeInstances"
+                  - "s3:ListAllMyBuckets"
+                  - "lambda:ListFunctions"
+                  - "rds:DescribeDBInstances"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+    DeletionPolicy: Retain
+
+  InventoryLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "AWSInventoryCollector"
+      Handler: "lambda_function.lambda_handler"
+      Runtime: "python3.9"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import csv
+          import json
+          import os
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              s3_bucket = os.environ['S3_BUCKET']
+              regions = ["us-east-1", "us-west-1", "eu-west-1"]
+              
+              data = []
+              
+              for region in regions:
+                  ec2 = boto3.client('ec2', region_name=region)
+                  instances = ec2.describe_instances()
+                  for reservation in instances['Reservations']:
+                      for instance in reservation['Instances']:
+                          data.append([region, "EC2 Instance", instance['InstanceId']])
+
+                  lambda_client = boto3.client('lambda', region_name=region)
+                  functions = lambda_client.list_functions()
+                  for function in functions['Functions']:
+                      data.append([region, "Lambda Function", function['FunctionArn']])
+
+                  rds_client = boto3.client('rds', region_name=region)
+                  databases = rds_client.describe_db_instances()
+                  for db in databases['DBInstances']:
+                      data.append([region, "RDS Instance", db['DBInstanceArn']])
+
+              csv_file = "/tmp/aws_inventory.csv"
+              with open(csv_file, mode="w", newline="") as file:
+                  writer = csv.writer(file)
+                  writer.writerow(["Region", "ResourceType", "ARN"])
+                  writer.writerows(data)
+
+              s3 = boto3.client('s3')
+              s3.upload_file(csv_file, s3_bucket, f"aws_inventory_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.csv")
+
+              return {
+                  "statusCode": 200,
+                  "body": json.dumps({"message": "Inventory collected and stored in S3."})
+              }
+
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+    DeletionPolicy: Retain
+
+  InventoryTrigger:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Name: "AWSInventoryTrigger"  # ✅ Fix: Explicitly setting a valid name
+      ScheduleExpression: "rate(1 day)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt InventoryLambdaFunction.Arn
+          Id: "LambdaInventoryTarget"
+    DeletionPolicy: Retain
+
+  LambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref InventoryLambdaFunction
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt InventoryTrigger.Arn
+    DeletionPolicy: Retain
