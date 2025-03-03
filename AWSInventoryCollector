@@ -1,61 +1,76 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "AWS Inventory Collection using Lambda and S3"
-
-Parameters:
-  S3BucketName:
-    Type: String
-    Description: "Name of the S3 bucket where inventory will be stored"
-
 Resources:
+  # S3 Bucket to store inventory
   InventoryS3Bucket:
-    Type: "AWS::S3::Bucket"
+    Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Ref S3BucketName
-    DeletionPolicy: Retain
+      BucketName: !Sub "aws-inventory-${AWS::AccountId}-${AWS::Region}"
 
-  LambdaExecutionRole:
-    Type: "AWS::IAM::Role"
+  # IAM Role for Lambda
+  InventoryLambdaRole:
+    Type: AWS::IAM::Role
     Properties:
-      RoleName: "LambdaInventoryRole"
+      RoleName: AWSInventoryLambdaRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: "Allow"
+          - Effect: Allow
             Principal:
-              Service: "lambda.amazonaws.com"
-            Action: "sts:AssumeRole"
+              Service: 
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
       Policies:
-        - PolicyName: "LambdaInventoryPolicy"
+        - PolicyName: AWSInventoryPolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Effect: "Allow"
+              - Effect: Allow
                 Action:
                   - "s3:PutObject"
-                Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
-              - Effect: "Allow"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListAllMyBuckets" 
+                Resource: !Sub "arn:aws:s3:::aws-inventory-${AWS::AccountId}-${AWS::Region}/*"
+              - Effect: Allow
+                Action:
+                  - "s3:ListAllMyBuckets" 
+                Resource: "*"
+              - Effect: Allow
                 Action:
                   - "ec2:DescribeInstances"
-                  - "s3:ListAllMyBuckets"
-                  - "lambda:ListFunctions"
+                  - "ec2:DescribeVolumes"
+                  - "s3:ListBuckets"
+                  - "iam:ListUsers"
+                  - "iam:ListRoles"
+                  - "ec2:DescribeSecurityGroups"
+                  - "ec2:DescribeVpcs"
+                  - "ec2:DescribeSubnets"
                   - "rds:DescribeDBInstances"
+                  - "lambda:ListFunctions"
+                  - "ecs:ListClusters"
+                  - "ecs:ListServices"
+                  - "dynamodb:ListTables"
+                  - "cloudfront:ListDistributions"
+                  - "elasticloadbalancing:DescribeLoadBalancers"
+                  - "route53:ListHostedZones"
+                  - "sns:ListTopics"
+                  - "sqs:ListQueues"
                 Resource: "*"
-              - Effect: "Allow"
-                Action:
-                  - "logs:CreateLogGroup"
-                  - "logs:CreateLogStream"
-                  - "logs:PutLogEvents"
-                Resource: "*"
-    DeletionPolicy: Retain
 
+  # Lambda Function
   InventoryLambdaFunction:
-    Type: "AWS::Lambda::Function"
+    Type: AWS::Lambda::Function
     Properties:
-      FunctionName: "AWSInventoryCollector"
-      Handler: "lambda_function.lambda_handler"
-      Runtime: "python3.9"
-      Role: !GetAtt LambdaExecutionRole.Arn
+      FunctionName: AWSInventoryCollector
+      Runtime: python3.9
+      Handler: index.lambda_handler
       Timeout: 300
+      MemorySize: 512
+      Role: !GetAtt InventoryLambdaRole.Arn
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref InventoryS3Bucket
       Code:
         ZipFile: |
           import boto3
@@ -66,10 +81,11 @@ Resources:
 
           def lambda_handler(event, context):
               s3_bucket = os.environ['S3_BUCKET']
+              account_id = boto3.client('sts').get_caller_identity()["Account"]
               regions = ["us-east-1", "us-west-1", "eu-west-1"]
               
               data = []
-              
+
               for region in regions:
                   ec2 = boto3.client('ec2', region_name=region)
                   instances = ec2.describe_instances()
@@ -77,51 +93,113 @@ Resources:
                       for instance in reservation['Instances']:
                           data.append([region, "EC2 Instance", instance['InstanceId']])
 
+                  volumes = ec2.describe_volumes()
+                  for volume in volumes['Volumes']:
+                      data.append([region, "EBS Volume", volume['VolumeId']])
+
+                  s3 = boto3.client('s3')
+                  buckets = s3.list_buckets()
+                  for bucket in buckets['Buckets']:
+                      data.append(["global", "S3 Bucket", bucket['Name']])
+
+                  iam = boto3.client('iam')
+                  users = iam.list_users()
+                  for user in users['Users']:
+                      data.append(["global", "IAM User", user['UserName']])
+
+                  roles = iam.list_roles()
+                  for role in roles['Roles']:
+                      data.append(["global", "IAM Role", role['RoleName']])
+
+                  dynamodb = boto3.client('dynamodb')
+                  tables = dynamodb.list_tables()
+                  for table in tables['TableNames']:
+                      data.append(["global", "DynamoDB Table", table])
+
+                  cloudfront = boto3.client('cloudfront')
+                  distributions = cloudfront.list_distributions()
+                  if 'DistributionList' in distributions and 'Items' in distributions['DistributionList']:
+                      for dist in distributions['DistributionList']['Items']:
+                          data.append(["global", "CloudFront Distribution", dist['Id']])
+
+                  route53 = boto3.client('route53')
+                  hosted_zones = route53.list_hosted_zones()
+                  for zone in hosted_zones['HostedZones']:
+                      data.append(["global", "Route 53 Hosted Zone", zone['Id']])
+
+                  sec_groups = ec2.describe_security_groups()
+                  for sg in sec_groups['SecurityGroups']:
+                      data.append([region, "Security Group", sg['GroupId']])
+
+                  vpcs = ec2.describe_vpcs()
+                  for vpc in vpcs['Vpcs']:
+                      data.append([region, "VPC", vpc['VpcId']])
+
+                  subnets = ec2.describe_subnets()
+                  for subnet in subnets['Subnets']:
+                      data.append([region, "Subnet", subnet['SubnetId']])
+
+                  rds_client = boto3.client('rds', region_name=region)
+                  databases = rds_client.describe_db_instances()
+                  for db in databases['DBInstances']:
+                      data.append([region, "RDS Instance", db['DBInstanceIdentifier']])
+
                   lambda_client = boto3.client('lambda', region_name=region)
                   functions = lambda_client.list_functions()
                   for function in functions['Functions']:
                       data.append([region, "Lambda Function", function['FunctionArn']])
 
-                  rds_client = boto3.client('rds', region_name=region)
-                  databases = rds_client.describe_db_instances()
-                  for db in databases['DBInstances']:
-                      data.append([region, "RDS Instance", db['DBInstanceArn']])
+                  ecs_client = boto3.client('ecs', region_name=region)
+                  clusters = ecs_client.list_clusters()
+                  for cluster in clusters['clusterArns']:
+                      data.append([region, "ECS Cluster", cluster])
+
+                      services = ecs_client.list_services(cluster=cluster)
+                      for service in services['serviceArns']:
+                          data.append([region, "ECS Service", service])
+
+                  elb_client = boto3.client('elbv2', region_name=region)
+                  load_balancers = elb_client.describe_load_balancers()
+                  for lb in load_balancers['LoadBalancers']:
+                      data.append([region, "Load Balancer", lb['LoadBalancerName']])
+
+                  sns_client = boto3.client('sns', region_name=region)
+                  topics = sns_client.list_topics()
+                  for topic in topics['Topics']:
+                      data.append([region, "SNS Topic", topic['TopicArn']])
+
+                  sqs_client = boto3.client('sqs', region_name=region)
+                  queues = sqs_client.list_queues()
+                  if "QueueUrls" in queues:
+                      for queue_url in queues["QueueUrls"]:
+                          data.append([region, "SQS Queue", queue_url])
 
               csv_file = "/tmp/aws_inventory.csv"
               with open(csv_file, mode="w", newline="") as file:
                   writer = csv.writer(file)
-                  writer.writerow(["Region", "ResourceType", "ARN"])
+                  writer.writerow(["Region", "ResourceType", "ResourceID"])
                   writer.writerows(data)
 
               s3 = boto3.client('s3')
-              s3.upload_file(csv_file, s3_bucket, f"aws_inventory_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.csv")
+              s3.upload_file(csv_file, s3_bucket, f"{account_id}/aws_inventory_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.csv")
 
               return {
                   "statusCode": 200,
                   "body": json.dumps({"message": "Inventory collected and stored in S3."})
               }
 
-      Environment:
-        Variables:
-          S3_BUCKET: !Ref S3BucketName
-    DeletionPolicy: Retain
-
-  InventoryTrigger:
-    Type: "AWS::Events::Rule"
+  # Lambda Invocation (Optional)
+  InventoryLambdaInvoke:
+    Type: AWS::Lambda::Permission
     Properties:
-      Name: "AWSInventoryTrigger"  # ✅ Fix: Explicitly setting a valid name
-      ScheduleExpression: "rate(1 day)"
-      State: "ENABLED"
-      Targets:
-        - Arn: !GetAtt InventoryLambdaFunction.Arn
-          Id: "LambdaInventoryTarget"
-    DeletionPolicy: Retain
-
-  LambdaInvokePermission:
-    Type: "AWS::Lambda::Permission"
-    Properties:
-      Action: "lambda:InvokeFunction"
+      Action: lambda:InvokeFunction
       FunctionName: !Ref InventoryLambdaFunction
-      Principal: "events.amazonaws.com"
-      SourceArn: !GetAtt InventoryTrigger.Arn
-    DeletionPolicy: Retain
+      Principal: "s3.amazonaws.com"
+
+Outputs:
+  S3BucketName:
+    Value: !Ref InventoryS3Bucket
+    Description: "S3 bucket where inventory will be stored."
+  LambdaFunctionName:
+    Value: !Ref InventoryLambdaFunction
+    Description: "Lambda function for AWS inventory."
